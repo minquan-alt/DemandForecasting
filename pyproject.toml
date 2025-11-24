@@ -8,4 +8,8 @@ dependencies = [
   "pandas>=2.3.3",
   "scikit-learn>=1.7.2",
   "statsmodels>=0.14.5",
+  "torch>=2.0.0",
+  "numpy>=1.24.0",
+  "tqdm>=4.66.0",
+  "pygrinder>=0.6.0",
 ]
