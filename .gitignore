@@ -234,3 +234,7 @@ mlruns/
 
 # Lock files (keep uv.lock but ignore others if needed)
 # *.lock
+
+# data
+data/
+*.npz
