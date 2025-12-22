@@ -133,7 +133,7 @@ dmypy.json
 *.onnx
 *.pkl
 *.joblib
-# checkpoints/*.pth
+checkpoints/*.pth
 checkpoints/*.pt
 checkpoints/*.ckpt
 !checkpoints/.gitkeep
