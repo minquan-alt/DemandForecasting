@@ -1,331 +1,242 @@
 import torch
 import numpy as np
-import sys
-import json
-import pandas as pd
-from datetime import datetime
 import matplotlib.pyplot as plt
-import os
-
+import sys
 sys.path.append('/home/guest/DemandForecasting')
-from data_utils.load_data import load_data
-from latent_demand_recovery.model.dlinear import Model
 
-class Config:
-    def __init__(self):
-        self.seq_len = 480
-        self.pred_len = 480
-        self.enc_in = 6
-        self.individual = True  # Model was trained with individual=True
+# Choose model: 'timesnet', 'timesnet_v1', or 'dlinear'
+MODEL_TYPE = 'timesnet'  # Change this to 'timesnet', 'timesnet_v1', or 'dlinear'
 
-class Imputer:
-    def __init__(self, checkpoint_path, device='cuda'):
-        """
-        Initialize the imputation model
-        
-        Args:
-            checkpoint_path: Path to the trained model checkpoint
-            device: 'cuda' or 'cpu'
-        """
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
-        
-        # Load model
-        self.config = Config()
-        self.model = Model(self.config).to(self.device)
-        self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
-        self.model.eval()
-        
-        print(f"Model loaded from {checkpoint_path}")
-        print(f"Using device: {self.device}")
+if MODEL_TYPE == 'timesnet':
+    from model.timesnet import Model
     
-    def impute_batch(self, X_batch):
-        """
-        Impute missing values in a batch of sequences
-        
-        Args:
-            X_batch: numpy array of shape [batch, seq_len, features] with NaN for missing values
-            
-        Returns:
-            imputed: numpy array with missing values filled in
-            mask: boolean array indicating which values were imputed
-        """
-        with torch.no_grad():
-            # Convert to tensor
-            X_tensor = torch.FloatTensor(X_batch).to(self.device)
-            
-            # Create mask for missing values (only for the first feature - sales)
-            missing_mask = torch.isnan(X_tensor[:, :, 0])
-            
-            # Replace NaN with 0 for model input
-            X_input = torch.nan_to_num(X_tensor, nan=0.0)
-            
-            # Get imputation
-            output = self.model.imputation(X_input)
-            
-            # Fill in missing values only for the sales channel (first feature)
-            X_imputed = X_tensor.clone()
-            X_imputed[:, :, 0] = torch.where(
-                missing_mask,
-                output[:, :, 0],  # Use model prediction
-                X_tensor[:, :, 0]  # Keep original value
-            )
-            
-            return X_imputed.cpu().numpy(), missing_mask.cpu().numpy()
+    class Config:
+        def __init__(self):
+            self.seq_len = 1440
+            self.pred_len = 0
+            self.label_len = 0
+            self.task_name = 'imputation'
+            self.enc_in = 6
+            self.c_out = 6
+            self.d_model = 64
+            self.d_ff = 32
+            self.num_kernels = 5
+            self.top_k = 7
+            self.e_layers = 2
+            self.embed = 'timeF'
+            self.freq = 'h'
+            self.dropout = 0.
     
-    def impute_dataset(self, X, batch_size=256):
-        """
-        Impute an entire dataset
-        
-        Args:
-            X: numpy array of shape [N, seq_len, features]
-            batch_size: batch size for processing
-            
-        Returns:
-            imputed_data: numpy array with missing values filled
-            imputation_mask: boolean mask showing which values were imputed
-        """
-        n_samples = X.shape[0]
-        n_batches = (n_samples + batch_size - 1) // batch_size
-        
-        imputed_data = np.zeros_like(X)
-        imputation_mask = np.zeros((X.shape[0], X.shape[1]), dtype=bool)
-        
-        print(f"Imputing {n_samples} sequences in {n_batches} batches...")
-        
-        for i in range(n_batches):
-            start_idx = i * batch_size
-            end_idx = min((i + 1) * batch_size, n_samples)
-            
-            batch = X[start_idx:end_idx]
-            imputed_batch, mask_batch = self.impute_batch(batch)
-            
-            imputed_data[start_idx:end_idx] = imputed_batch
-            imputation_mask[start_idx:end_idx] = mask_batch
-            
-            if (i + 1) % 10 == 0:
-                print(f"  Processed {end_idx}/{n_samples} sequences")
-        
-        print("Imputation complete!")
-        return imputed_data, imputation_mask
-    
-    def visualize_imputation(self, original, imputed, mask, sample_idx=0, save_path=None):
-        """
-        Visualize the imputation results for a sample
-        
-        Args:
-            original: Original data with NaN
-            imputed: Imputed data
-            mask: Boolean mask of imputed positions
-            sample_idx: Which sample to visualize
-            save_path: Optional path to save the figure
-        """
-        fig, axes = plt.subplots(2, 1, figsize=(15, 8))
-        
-        # Extract the sales channel (first feature)
-        original_sales = original[sample_idx, :, 0]
-        imputed_sales = imputed[sample_idx, :, 0]
-        sample_mask = mask[sample_idx]
-        
-        # Plot 1: Original data with missing values highlighted
-        ax1 = axes[0]
-        observed_indices = ~np.isnan(original_sales)
-        missing_indices = np.isnan(original_sales)
-        
-        ax1.plot(np.where(observed_indices)[0], original_sales[observed_indices], 
-                 'b-', label='Observed', linewidth=1.5, alpha=0.7)
-        ax1.scatter(np.where(missing_indices)[0], 
-                   np.full(missing_indices.sum(), np.nanmean(original_sales)),
-                   c='red', s=20, label='Missing', alpha=0.5, marker='x')
-        ax1.set_xlabel('Time Step')
-        ax1.set_ylabel('Sales')
-        ax1.set_title('Original Data with Missing Values')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Imputed data
-        ax2 = axes[1]
-        ax2.plot(imputed_sales, 'g-', label='Imputed', linewidth=1.5, alpha=0.7)
-        ax2.scatter(np.where(sample_mask)[0], imputed_sales[sample_mask],
-                   c='orange', s=30, label='Imputed values', alpha=0.8, marker='o')
-        ax2.plot(np.where(observed_indices)[0], original_sales[observed_indices],
-                'b.', label='Original observed', markersize=3, alpha=0.5)
-        ax2.set_xlabel('Time Step')
-        ax2.set_ylabel('Sales')
-        ax2.set_title('Imputed Complete Time Series')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Figure saved to {save_path}")
-        
-        plt.show()
-        
-    def compute_statistics(self, original, imputed, mask, ground_truth=None):
-        """
-        Compute statistics about the imputation
-        
-        Args:
-            original: Original data with NaN
-            imputed: Imputed data
-            mask: Boolean mask of imputed positions
-            ground_truth: Optional ground truth for artificially masked data
-            
-        Returns:
-            stats: Dictionary of statistics
-        """
-        stats = {}
-        
-        # Count missing values
-        total_values = mask.size
-        missing_values = mask.sum()
-        stats['total_values'] = int(total_values)
-        stats['missing_values'] = int(missing_values)
-        stats['missing_percentage'] = float(missing_values / total_values * 100)
-        
-        # Statistics on imputed values
-        imputed_values = imputed[:, :, 0][mask]
-        stats['imputed_mean'] = float(np.mean(imputed_values))
-        stats['imputed_std'] = float(np.std(imputed_values))
-        stats['imputed_min'] = float(np.min(imputed_values))
-        stats['imputed_max'] = float(np.max(imputed_values))
-        
-        # Statistics on observed values
-        observed_mask = ~np.isnan(original[:, :, 0])
-        observed_values = original[:, :, 0][observed_mask]
-        stats['observed_mean'] = float(np.mean(observed_values))
-        stats['observed_std'] = float(np.std(observed_values))
-        stats['observed_min'] = float(np.min(observed_values))
-        stats['observed_max'] = float(np.max(observed_values))
-        
-        # If ground truth is available, compute accuracy metrics
-        if ground_truth is not None:
-            gt_values = ground_truth[:, :, 0][mask]
-            mae = np.abs(imputed_values - gt_values).mean()
-            rmse = np.sqrt(np.mean((imputed_values - gt_values) ** 2))
-            mape = np.mean(np.abs((gt_values - imputed_values) / (gt_values + 1e-8))) * 100
-            
-            stats['mae'] = float(mae)
-            stats['rmse'] = float(rmse)
-            stats['mape'] = float(mape)
-        
-        return stats
+    checkpoint_path = 'latent_demand_recovery/checkpoints/timesnet_best.pth'
 
+elif MODEL_TYPE == 'timesnet_v1':
+    from model.timesnet import Model
+    
+    class Config:
+        def __init__(self):
+            self.seq_len = 1440
+            self.pred_len = 0
+            self.label_len = 0
+            self.task_name = 'imputation'
+            self.enc_in = 6
+            self.c_out = 6
+            self.d_model = 64
+            self.d_ff = 128
+            self.num_kernels = 5
+            self.top_k = 7
+            self.e_layers = 2
+            self.embed = 'timeF'
+            self.freq = 'h'
+            self.dropout = 0.
+    
+    checkpoint_path = 'latent_demand_recovery/checkpoints/timesnet_v1_best.pth'
+    
+elif MODEL_TYPE == 'dlinear':
+    from model.dlinear import Model
+    
+    class Config:
+        def __init__(self):
+            self.seq_len = 1440
+            self.pred_len = 1440
+            self.enc_in = 6
+            self.individual = True
+    
+    checkpoint_path = 'latent_demand_recovery/checkpoints/dlinear_best.pth'
+    
+else:
+    raise ValueError(f"Unknown model type: {MODEL_TYPE}. Choose 'timesnet', 'timesnet_v1', or 'dlinear'")
 
-def main():
-    """
-    Main function to run the imputation process
-    """
-    print("=" * 60)
-    print("Demand Imputation Process")
-    print("=" * 60)
-    
-    # Initialize imputer
-    checkpoint_path = 'latent_demand_recovery/checkpoints/best_imputation_model.pth'
-    imputer = Imputer(checkpoint_path, device='cuda')
-    
-    # Load data
-    print("\nLoading data...")
-    data = load_data()
-    X = data['train_set']['X']
-    ts_origin = data['ts_origin']
-    valid_idx = data['valid_idx']
-    
-    print(f"Data shape: {X.shape}")
-    print(f"  - Samples: {X.shape[0]}")
-    print(f"  - Sequence length: {X.shape[1]}")
-    print(f"  - Features: {X.shape[2]}")
-    
-    # For demo, let's use a subset
-    subset_size = 1000
-    X_subset = X[:subset_size]
-    ts_origin_subset = ts_origin[:subset_size]
-    valid_idx_subset = valid_idx[:subset_size]
-    
-    print(f"\nUsing subset of {subset_size} samples for demonstration")
-    
-    # Perform imputation
-    print("\n" + "=" * 60)
-    print("Starting imputation...")
-    print("=" * 60)
-    imputed_data, imputation_mask = imputer.impute_dataset(X_subset, batch_size=256)
-    
-    # Compute statistics
-    print("\n" + "=" * 60)
-    print("Imputation Statistics")
-    print("=" * 60)
-    stats = imputer.compute_statistics(
-        X_subset, 
-        imputed_data, 
-        imputation_mask,
-        ground_truth=ts_origin_subset  # We have ground truth for evaluation
-    )
-    
-    for key, value in stats.items():
-        if isinstance(value, float):
-            print(f"{key:25s}: {value:.6f}")
-        else:
-            print(f"{key:25s}: {value}")
-    
-    # Save results
-    print("\n" + "=" * 60)
-    print("Saving Results")
-    print("=" * 60)
-    
-    os.makedirs('latent_demand_recovery/imputation_results', exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    
-    # Save statistics
-    stats_path = f'latent_demand_recovery/imputation_results/stats_{timestamp}.json'
-    with open(stats_path, 'w') as f:
-        json.dump(stats, f, indent=2)
-    print(f"✓ Statistics saved to {stats_path}")
-    
-    # Save imputed data (subset for demo)
-    save_samples = 100
-    np.savez_compressed(
-        f'latent_demand_recovery/imputation_results/imputed_data_{timestamp}.npz',
-        original=X_subset[:save_samples],
-        imputed=imputed_data[:save_samples],
-        mask=imputation_mask[:save_samples],
-        ground_truth=ts_origin_subset[:save_samples]
-    )
-    print(f"✓ Imputed data (first {save_samples} samples) saved")
-    
-    # Visualize a few examples
-    print("\n" + "=" * 60)
-    print("Generating Visualizations")
-    print("=" * 60)
-    
-    os.makedirs('latent_demand_recovery/imputation_results/figures', exist_ok=True)
-    
-    # Visualize 3 random samples
-    np.random.seed(42)
-    sample_indices = np.random.choice(subset_size, size=min(3, subset_size), replace=False)
-    
-    for i, idx in enumerate(sample_indices):
-        fig_path = f'latent_demand_recovery/imputation_results/figures/sample_{i+1}_{timestamp}.png'
-        print(f"\nVisualizing sample {i+1} (index {idx})...")
-        imputer.visualize_imputation(
-            X_subset, 
-            imputed_data, 
-            imputation_mask, 
-            sample_idx=idx,
-            save_path=fig_path
-        )
-    
-    print("\n" + "=" * 60)
-    print("Imputation Complete!")
-    print("=" * 60)
-    print(f"\nResults saved to: latent_demand_recovery/imputation_results/")
-    print(f"  - Statistics: stats_{timestamp}.json")
-    print(f"  - Imputed data: imputed_data_{timestamp}.npz")
-    print(f"  - Figures: figures/sample_*_{timestamp}.png")
-    
-    return imputed_data, imputation_mask, stats
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = Model(Config()).to(device)
+model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+model.eval()
 
+print(f"Using model: {MODEL_TYPE.upper()}")
+print(f"Checkpoint: {checkpoint_path}")
 
-if __name__ == '__main__':
-    imputed_data, imputation_mask, stats = main()
+raw_data = np.load('data/processed_data.npz')
+train_set = raw_data['train_set']
+valid_idx = raw_data['valid_idx']
+hours_sale_origin = raw_data['hours_sale_origin']
+del raw_data
+
+train_set_filled = np.nan_to_num(train_set.copy(), nan=0.0)
+mask = np.ones_like(train_set, dtype=np.float32)
+mask[:, :, 0] = (~valid_idx[:, :, 0]).astype(np.float32)
+missing_mask = valid_idx[:, :, 0]
+
+print(f"Imputing {len(train_set)} sequences...")
+imputed_all = []
+batch_size = 128
+
+with torch.no_grad():
+    for i in range(0, len(train_set), batch_size):
+        batch = train_set_filled[i:i+batch_size]
+        batch_mask = mask[i:i+batch_size]
+        
+        x_enc = torch.FloatTensor(batch).to(device)
+        batch_mask_t = torch.FloatTensor(batch_mask).to(device)
+        
+        if MODEL_TYPE in ['timesnet', 'timesnet_v1']:
+            output = model(x_enc, None, x_enc.clone(), None, batch_mask_t)
+        else:  # dlinear
+            output = model.imputation(x_enc)
+        
+        imputed_all.append(output.cpu().numpy())
+
+imputed_data = np.concatenate(imputed_all, axis=0)
+del imputed_all, train_set_filled, mask
+
+# Model predictions for all positions
+model_predictions_flat = imputed_data[:, :, 0]
+# Clip to ensure non-negative sales
+model_predictions_flat = np.clip(model_predictions_flat, 0.0, None)
+del imputed_data
+
+hours_sale_origin_flat = hours_sale_origin.reshape(len(hours_sale_origin), -1)
+
+# Get raw data (with missing) for comparison
+hours_sale_raw_flat = train_set[:, :, 0]
+del train_set
+
+# IMPORTANT: Combine observed (from raw) + imputed (from model)
+# Keep observed values, only replace missing positions
+hours_sale_imputed_flat = np.nan_to_num(hours_sale_raw_flat.copy(), nan=0.0)
+hours_sale_imputed_flat[missing_mask] = model_predictions_flat[missing_mask]
+
+missing_positions = missing_mask
+original_values = hours_sale_origin_flat[missing_positions]
+imputed_values = hours_sale_imputed_flat[missing_positions]
+
+mae = np.abs(original_values - imputed_values).mean()
+rmse = np.sqrt(((original_values - imputed_values) ** 2).mean())
+
+print(f"\nOverall Metrics (All Missing Positions):")
+print(f"  MAE: {mae:.4f}")
+print(f"  RMSE: {rmse:.4f}")
+
+# Calculate Decoupling Score for RAW data (before imputation)
+print(f"\n{'='*60}")
+print(f"DECOUPLING SCORE COMPARISON")
+print(f"{'='*60}")
+
+stockout_ratio = missing_mask.astype(float)
+series_num = len(hours_sale_origin)
+
+# 1. Raw data (with NaN replaced by 0)
+raw_data_filled = np.nan_to_num(hours_sale_raw_flat, nan=0.0)
+correlations_raw = []
+weights_raw = []
+
+for i in range(series_num):
+    sr_i = stockout_ratio[i]
+    d_i = raw_data_filled[i]
+    
+    if sr_i.std() > 0 and d_i.std() > 0:
+        corr = np.corrcoef(sr_i, d_i)[0, 1]
+        if not np.isnan(corr):
+            correlations_raw.append(corr)
+            mean_sales = hours_sale_origin_flat[i].mean()
+            weights_raw.append(mean_sales)
+
+correlations_raw = np.array(correlations_raw)
+weights_raw = np.array(weights_raw)
+weights_raw = weights_raw / weights_raw.sum()
+
+decoupling_score_raw = np.sum(weights_raw * correlations_raw)
+
+print(f"\n1. Raw Data (Before Imputation):")
+print(f"   Decoupling Score (ρ_DS): {decoupling_score_raw:.4f}")
+
+# 2. Imputed data
+correlations = []
+weights = []
+
+for i in range(series_num):
+    sr_i = stockout_ratio[i]
+    d_i = hours_sale_imputed_flat[i]
+    
+    if sr_i.std() > 0 and d_i.std() > 0:
+        corr = np.corrcoef(sr_i, d_i)[0, 1]
+        if not np.isnan(corr):
+            correlations.append(corr)
+            mean_sales = hours_sale_origin_flat[i].mean()
+            weights.append(mean_sales)
+
+correlations = np.array(correlations)
+weights = np.array(weights)
+weights = weights / weights.sum()
+
+decoupling_score = np.sum(weights * correlations)
+
+print(f"\n2. Imputed Data (After {MODEL_TYPE.upper()}):")
+print(f"   Decoupling Score (ρ_DS): {decoupling_score:.4f}")
+
+print(f"\n3. Improvement:")
+print(f"   Δ = {decoupling_score_raw:.4f} → {decoupling_score:.4f}")
+print(f"   Change: {abs(decoupling_score - decoupling_score_raw):.4f}")
+print(f"{'='*60}")
+
+print(f"\nTotal missing rate: {missing_positions.sum()}/{missing_positions.size} ({missing_positions.sum()/missing_positions.size*100:.1f}%)")
+
+# Visualization: Single series with 1000 points
+sample_series_idx = np.random.randint(0, series_num)
+n_points = min(1000, hours_sale_origin_flat.shape[1])
+
+sample_original = hours_sale_origin_flat[sample_series_idx][:n_points]
+sample_imputed = hours_sale_imputed_flat[sample_series_idx][:n_points]
+sample_missing = missing_mask[sample_series_idx][:n_points]
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10))
+
+# Plot 1: Original sales with missing marked
+observed_mask = ~sample_missing
+time_steps = np.arange(n_points)
+
+ax1.plot(time_steps, sample_original, 'b-', alpha=0.5, linewidth=1, label='Sales Trend')
+ax1.scatter(time_steps[sample_missing], sample_original[sample_missing],
+           c='red', s=50, alpha=0.8, label=f'Missing Positions ({sample_missing.sum()})', marker='x', linewidths=2)
+ax1.set_ylabel('Sales', fontsize=12)
+ax1.set_title(f'Original Sales with Missing Positions (Series {sample_series_idx}, {n_points} points)', 
+             fontsize=14, fontweight='bold')
+ax1.legend(fontsize=11, loc='upper right')
+ax1.grid(True, alpha=0.3)
+
+# Plot 2: Imputed sales with imputed values marked
+ax2.plot(time_steps, sample_imputed, 'g-', alpha=0.5, linewidth=1, label='Sales Trend')
+ax2.scatter(time_steps[sample_missing], sample_imputed[sample_missing],
+           c='orange', s=50, alpha=0.8, label=f'Imputed Values ({sample_missing.sum()})', marker='o', 
+           edgecolors='red', linewidths=1.5)
+ax2.set_xlabel('Time Steps (Hours)', fontsize=12)
+ax2.set_ylabel('Sales', fontsize=12)
+ax2.set_title(f'Sales After Imputation (Series {sample_series_idx})', 
+             fontsize=14, fontweight='bold')
+ax2.legend(fontsize=11, loc='upper right')
+ax2.grid(True, alpha=0.3)
+
+plt.suptitle(f'Imputation Visualization ({MODEL_TYPE.upper()})\nMAE={mae:.4f}, RMSE={rmse:.4f}, ρ_DS={decoupling_score:.4f}\nMissing Rate: {sample_missing.sum()}/{n_points} ({sample_missing.sum()/n_points*100:.1f}%)', 
+            fontsize=14, fontweight='bold', y=0.995)
+
+plt.tight_layout()
+plt.savefig(f'latent_demand_recovery/imputation_visualization_{MODEL_TYPE}.png', dpi=300, bbox_inches='tight')
+print(f"\nVisualization saved to: latent_demand_recovery/imputation_visualization_{MODEL_TYPE}.png")

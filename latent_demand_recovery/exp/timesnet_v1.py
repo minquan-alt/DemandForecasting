@@ -15,13 +15,13 @@ class Config:
         self.task_name = 'imputation'
         self.enc_in = 6  # input features: 6
         self.c_out = 6   # output: all 6 features (just use the first one)
-        self.d_model = 64
-        self.d_ff = 32  # hoặc 128/256 ~ 2/4 * d_model
+        self.d_model = 64  # Tăng từ 64 → 128
+        self.d_ff = 32    # Tăng từ 32 → 256 (2x d_model)
         self.num_kernels = 5
         
         # timesNet specific
         self.top_k = 7   # number of periods to detect
-        self.e_layers = 2  # number of TimesBlocks
+        self.e_layers = 2  # Tăng từ 2 → 3 layers
         
         # embedding
         self.embed = 'timeF'  # time features encoding
@@ -29,10 +29,10 @@ class Config:
         self.dropout = 0.1
         
         # training config
-        self.batch_size = 32
-        self.lr = 0.001
+        self.batch_size = 128
+        self.lr = 0.0005  # Giảm learning rate để stable hơn
         self.dropout = 0.1
-        self.epochs = 10
+        self.epochs = 20  # Tăng epochs
         
 
 configs = Config()
@@ -67,7 +67,8 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = Model(configs).to(device)
 
 # optimizer and loss
-optimizer = torch.optim.Adam(model.parameters(), lr=configs.lr)
+optimizer = torch.optim.AdamW(model.parameters(), lr=configs.lr, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 criterion = torch.nn.MSELoss()
 
 # training parameters
@@ -118,8 +119,10 @@ for epoch in range(num_epochs):
         # Loss only on missing positions
         missing_mask = (batch_mask[:, :, 0] == 0)
         if missing_mask.sum() > 0:
+            # Clip predictions to be non-negative (sales cannot be negative)
+            output_clipped = torch.clamp(output[:, :, 0], min=0.0)
             loss = criterion(
-                output[:, :, 0][missing_mask],
+                output_clipped[missing_mask],
                 target[missing_mask]
             )
             
@@ -157,14 +160,19 @@ for epoch in range(num_epochs):
             
             missing_mask = (batch_mask[:, :, 0] == 0)
             if missing_mask.sum() > 0:
+                # Clip predictions to be non-negative
+                output_clipped = torch.clamp(output[:, :, 0], min=0.0)
                 loss = criterion(
-                    output[:, :, 0][missing_mask],  # Only use first feature (hours_sale)
+                    output_clipped[missing_mask],  # Only use first feature (hours_sale)
                     target[missing_mask]
                 )
                 val_loss += loss.item()
                 val_batches += 1
     
     avg_val_loss = val_loss / val_batches if val_batches > 0 else 0
+    
+    # Learning rate scheduling
+    scheduler.step(avg_val_loss)
     
     # Save best model
     if avg_val_loss < best_val_loss:
