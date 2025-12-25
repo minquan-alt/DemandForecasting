@@ -1,86 +1,87 @@
-from torch.utils.data import Dataset, DataLoader
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from datasets import load_dataset
 import numpy as np
-
-def mimic_missing(patch_ts, p=0.3, max_missing_patch=7, min_missing_patch=3):
-    patch_len = patch_ts.shape[-1]
-    patch_num = patch_ts.shape[1]
-    batch_size = patch_ts.shape[0]
-    patch_time = np.arange(patch_len)[None,None,:] # patch_time which could broadcast
-    ## missing mechanism
-    patch_missing_cnt = np.isnan(patch_ts).sum(axis=-1, keepdims=True)
-    non_missing_idx = patch_missing_cnt==0
-    # continuous-patch missing: conti_idx
-    non_missing_cumsum = np.zeros_like(non_missing_idx.astype(int))
-    sum_vec = np.zeros_like(non_missing_idx[:,0].astype(int))
-    conti_idx = np.zeros_like(non_missing_idx) # (batch_size, day_len, 1)
-    for i in range(patch_num):
-        sum_vec = np.where(non_missing_idx[:,i], sum_vec, 0)
-        sum_vec = sum_vec + non_missing_idx[:,i].astype(int)
-        non_missing_cumsum[:,i] = sum_vec.copy()
-        if i>max_missing_patch:
-            conti_len = np.random.randint(low=min_missing_patch, high=max_missing_patch+1, size=sum_vec.shape)
-            conti_len = np.where((conti_len < sum_vec) & (np.random.rand(*sum_vec.shape)<p/10), conti_len, 0)
-            conti_tmp = np.arange(batch_size * max_missing_patch).reshape(batch_size, max_missing_patch, 1)
-            conti_tmp = max_missing_patch - (conti_tmp - conti_tmp[:,0:1])
-            conti_tmp = (conti_tmp <= conti_len[:,None]) & (conti_tmp > 1)
-            conti_idx[:,i-max_missing_patch+1:i+1] = conti_idx[:,i-max_missing_patch+1:i+1] | conti_tmp
-    # intra-patch missing: intra_idx
-    intra_rand_idx = (np.random.rand(*patch_missing_cnt.shape) < p) & non_missing_idx
-    patch_missing_start_time = np.random.randint(low=0, high=int(patch_len*(1-p)), size=patch_missing_cnt.shape)
-    patch_missing_end_time = patch_len - patch_missing_start_time
-    intra_missing_idx_front = patch_time>=patch_missing_start_time
-    intra_missing_idx_backend = patch_time<=patch_missing_end_time
-    shape = list(intra_missing_idx_front.shape)
-    shape[-1] = 1
-    intra_missing_idx = np.where(np.random.rand(*shape)<=0.5, intra_missing_idx_front, intra_missing_idx_backend)
-    intra_idx = intra_rand_idx & intra_missing_idx # (batch_size, patch_num, patch_len)
+import torch
+from torch.utils.data import Dataset
+from sklearn.preprocessing import StandardScaler
 
 
-    # valid_idx = np.squeeze(intra_rand_idx | conti_idx)
-    sample_idx = intra_idx | conti_idx
-
-    patch_ts_missing = np.where(sample_idx, np.nan, patch_ts)
-    valid_idx = ~np.isnan(patch_ts)&np.isnan(patch_ts_missing)
-    return patch_ts_missing, valid_idx
-
-def load_data():
-    dataset = load_dataset("Dingdong-Inc/FreshRetailNet-50K")
-    data = dataset['train'].to_pandas()
-
-    data = data.sort_values(by=['store_id', 'product_id', 'dt'])
-    horizon=90
-    series_num = data.shape[0]//horizon
-
-    hours_sale = np.array(data['hours_sale'].tolist())
-    hours_stock_status = np.array(data['hours_stock_status'].tolist())
-
-    hours_sale_origin = hours_sale.reshape(series_num*3, 30, 24)[...,6:22]
-    hours_stock_status = hours_stock_status.reshape(series_num*3, 30, 24)[...,6:22]
-    hours_sale = np.where(hours_stock_status==1, np.nan, hours_sale_origin)
-    covariate = data[['discount', 'holiday_flag', 'precpt', 'avg_temperature']].values.reshape(series_num*3, 30, 4)
-    covariate = covariate/(covariate.max(axis=1, keepdims=True)+0.1)
+class TimeSeriesDataset(Dataset):
+    def __init__(self, data, input_len, target_len):
+        self.data = torch.from_numpy(data).float()
+        self.input_len = input_len
+        self.target_len = target_len
+        self.total_len = input_len + target_len
+        
+        self.indices = []
+        print(data.shape)
+        print(self.total_len)
+        for i in range(data.shape[0]):
+            n_seqs = data.shape[1] - self.total_len + 1
+            if n_seqs > 0:
+                self.indices.extend([(i, start) for start in range(n_seqs)])
     
-    hours_sale, valid_idx = mimic_missing(hours_sale, p=0.3, max_missing_patch=7, min_missing_patch=3)    
+    def __len__(self):
+        return len(self.indices)
+    
+    def __getitem__(self, idx):
+        series_idx, start = self.indices[idx]
+        seq = self.data[series_idx, start:start + self.total_len]
+        
+        x = seq[:self.input_len]
+        y_full = seq[self.input_len:]
+        
+        x_dec = y_full[:, :-1]
+        y = y_full[:, -1:]
+        
+        return x, x_dec, y
 
-    # generate train dataset
-    data = np.concatenate([hours_sale[...,None], np.broadcast_to(covariate[:,:,None,:], hours_sale.shape + (4,))], axis=-1)
-    data = np.concatenate([data, np.broadcast_to(np.arange(16)[None,None,:,None]/15, hours_sale[...,None].shape)], axis=-1)
-    data = data.reshape(-1, 30*16, 6)
-    valid_idx = valid_idx.reshape(-1, 30*16, 1)
-    hours_sale_origin = hours_sale_origin.reshape(-1, 30*16, 1)
-    train_set={'X': data}
-    data = {
-        'train_set': train_set,
-        'ts_origin': hours_sale_origin,
-        'valid_idx': valid_idx,
-        'params': {
-            'n_steps': 30*16,
-            'n_features': 6,
-            'patch_len': 16,
-            'OT':1
-        }
-    }
-    return data
+
+def load_and_preprocess_data(data_path, time_encoded=True, input_len=480, target_len=112, horizon=90):
+    data = pd.read_csv(data_path)
+    data = data.sort_values(by=['store_id', 'product_id', 'dt'])
+    type = data_path.split('/')[-1][:-4]
+    if type == 'imputed_data':
+        data['hours_sale'] = data['hours_sale'].map(lambda x: x[1:-1].split(', '))
+    else:
+        data['hours_sale'] = data['hours_sale'].map(lambda x: x[1:-1].replace('\n', '').split())
+    data['dt'] = pd.to_datetime(data['dt'])
+    data['dayofweek'] = data['dt'].dt.dayofweek
+    data['day'] = data['dt'].dt.day
+    
+    numerical_features = ['discount', 'precpt', 'avg_temperature', 'avg_humidity', 'avg_wind_level']
+    binary_features = ['holiday_flag', 'activity_flag']
+    time_features = ['dayofweek', 'day'] if time_encoded else []
+    
+    series_num = data.shape[0] // horizon
+    
+    hours_sale = np.array(data['hours_sale'].tolist(), dtype=float)
+    hours_sale = hours_sale.reshape(series_num, horizon, 24)[..., 6:22]
+    
+    numerical_data = data[numerical_features].values.astype(float)
+    scaler = StandardScaler()
+    numerical_normalized = scaler.fit_transform(numerical_data)
+    
+    if time_encoded:
+        time_data = data[time_features].values.astype(float)
+        time_data[:, 0] = time_data[:, 0] / 6
+        time_data[:, 1] = (time_data[:, 1] - 1) / 30
+    else:
+        time_data = np.empty((numerical_data.shape[0], 0))
+    
+    binary_data = data[binary_features].values.astype(float)
+    features_combined = np.concatenate([numerical_normalized, binary_data, time_data], axis=1)
+    features = features_combined.reshape(series_num, horizon, -1)
+    
+    hours_sale = np.expand_dims(hours_sale, axis=-1)
+    features = np.expand_dims(features, axis=2)
+    features = np.broadcast_to(features, (series_num, horizon, hours_sale.shape[2], features.shape[-1]))
+    hour_encoding = np.broadcast_to(np.arange(16)[None, None, :, None] / 15, (series_num, horizon, 16, 1))
+    
+    ds = np.concatenate([features, hour_encoding, hours_sale], axis=-1)
+    ds = ds.reshape(series_num, horizon * 16, -1)
+    
+    del data, numerical_data, numerical_normalized, time_data
+    del binary_data, features_combined, features, hour_encoding, hours_sale
+    
+    dataset = TimeSeriesDataset(ds, input_len=input_len, target_len=target_len)
+    return dataset, scaler

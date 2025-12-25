@@ -137,7 +137,7 @@ checkpoints/*.pth
 checkpoints/*.pt
 checkpoints/*.ckpt
 !checkpoints/.gitkeep
-
+checkpoints
 # Training logs and outputs
 logs/
 *.log

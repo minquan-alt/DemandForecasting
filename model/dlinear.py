@@ -11,11 +11,15 @@ class Model(nn.Module):
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
 
-        # Decompsition Kernel Size
         kernel_size = 25
         self.decompsition = series_decomp(kernel_size)
         self.individual = configs.individual
         self.channels = configs.enc_in
+        
+        self.use_decoder = getattr(configs, 'use_decoder', False)
+        if self.use_decoder:
+            self.dec_in = getattr(configs, 'dec_in', configs.enc_in - 1)
+            self.dec_projection = nn.Linear(self.dec_in, 1)
 
         if self.individual:
             self.Linear_Seasonal = nn.ModuleList()
@@ -34,8 +38,7 @@ class Model(nn.Module):
             self.Linear_Seasonal.weight = nn.Parameter((1/self.seq_len)*torch.ones([self.pred_len,self.seq_len]))
             self.Linear_Trend.weight = nn.Parameter((1/self.seq_len)*torch.ones([self.pred_len,self.seq_len]))
 
-    def forward(self, x):
-        # x: [Batch, Input length, Channel]
+    def forward(self, x, x_dec=None):
         seasonal_init, trend_init = self.decompsition(x)
         seasonal_init, trend_init = seasonal_init.permute(0,2,1), trend_init.permute(0,2,1)
         if self.individual:
@@ -48,8 +51,14 @@ class Model(nn.Module):
             seasonal_output = self.Linear_Seasonal(seasonal_init)
             trend_output = self.Linear_Trend(trend_init)
 
-        x = seasonal_output + trend_output
-        return x.permute(0,2,1) # to [Batch, Output length, Channel]
+        pred = seasonal_output + trend_output
+        pred = pred.permute(0,2,1)
+        
+        if self.use_decoder and x_dec is not None:
+            dec_out = self.dec_projection(x_dec)
+            pred = pred[:, :, -1:] + dec_out
+        
+        return pred
     
     def imputation(self, x):
         """
