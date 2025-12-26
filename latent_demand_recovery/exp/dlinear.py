@@ -122,7 +122,7 @@ for epoch in range(num_epochs):
             batch_idx = val_indices[i:i+batch_size]
             
             x_enc = torch.FloatTensor(train_set_filled[batch_idx]).to(device)
-            target = torch.FloatTensor(hours_sale_origin_flat[batch_idx]).to(device)  # Ground truth from hours_sale_origin
+            target = torch.FloatTensor(hours_sale_origin_flat[batch_idx]).to(device)
             
             output = model.imputation(x_enc)
             

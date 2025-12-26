@@ -46,8 +46,8 @@ class Config:
         self.enable_scheduler = True
         self.seq_len = 480
         self.pred_len = 112
-        self.enc_in = 10
-        self.dec_in = 9
+        self.enc_in = 11
+        self.dec_in = 10
         self.use_decoder = use_decoder
         self.individual = True
         
@@ -73,6 +73,7 @@ print(f'Total dataset size: {len(dataset)}')
 num_train = int(len(dataset) * configs.train_ratio)
 num_val = int(len(dataset) * (1 - configs.train_ratio) / 2)
 
+# train_ratio: 0.99 (train_dataset: 42025500, val_dataset: 212250, test_dataset: 212250)
 train_dataset = torch.utils.data.Subset(dataset, list(range(0, num_train)))
 val_dataset = torch.utils.data.Subset(dataset, list(range(num_train, num_train + num_val)))
 test_dataset = torch.utils.data.Subset(dataset, list(range(num_train + num_val, len(dataset))))

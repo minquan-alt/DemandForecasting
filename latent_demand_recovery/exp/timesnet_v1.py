@@ -94,19 +94,16 @@ for epoch in range(num_epochs):
     train_loss = 0.0
     num_batches = 0
     
-    # Shuffle train indices
     np.random.shuffle(train_indices)
     
     for i in range(0, len(train_indices), batch_size):
         batch_idx = train_indices[i:i+batch_size]
         
-        # Prepare batch
         x_enc = torch.FloatTensor(train_set_filled[batch_idx]).to(device)
         x_dec = x_enc.clone()
         batch_mask = torch.FloatTensor(mask[batch_idx]).to(device)
-        target = torch.FloatTensor(hours_sale_origin_flat[batch_idx]).to(device)  # Ground truth from hours_sale_origin
+        target = torch.FloatTensor(hours_sale_origin_flat[batch_idx]).to(device)
         
-        # Forward
         optimizer.zero_grad()
         output = model(
             x_enc=x_enc,
@@ -116,17 +113,14 @@ for epoch in range(num_epochs):
             mask=batch_mask
         )
         
-        # Loss only on missing positions
         missing_mask = (batch_mask[:, :, 0] == 0)
         if missing_mask.sum() > 0:
-            # Clip predictions to be non-negative (sales cannot be negative)
             output_clipped = torch.clamp(output[:, :, 0], min=0.0)
             loss = criterion(
                 output_clipped[missing_mask],
                 target[missing_mask]
             )
             
-            # Backward
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -148,7 +142,7 @@ for epoch in range(num_epochs):
             x_enc = torch.FloatTensor(train_set_filled[batch_idx]).to(device)
             x_dec = x_enc.clone()
             batch_mask = torch.FloatTensor(mask[batch_idx]).to(device)
-            target = torch.FloatTensor(hours_sale_origin_flat[batch_idx]).to(device)  # Ground truth from hours_sale_origin
+            target = torch.FloatTensor(hours_sale_origin_flat[batch_idx]).to(device)
             
             output = model(
                 x_enc=x_enc,
@@ -160,10 +154,9 @@ for epoch in range(num_epochs):
             
             missing_mask = (batch_mask[:, :, 0] == 0)
             if missing_mask.sum() > 0:
-                # Clip predictions to be non-negative
                 output_clipped = torch.clamp(output[:, :, 0], min=0.0)
                 loss = criterion(
-                    output_clipped[missing_mask],  # Only use first feature (hours_sale)
+                    output_clipped[missing_mask],  # use first feature (hours_sale)
                     target[missing_mask]
                 )
                 val_loss += loss.item()

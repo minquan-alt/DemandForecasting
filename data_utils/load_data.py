@@ -13,8 +13,6 @@ class TimeSeriesDataset(Dataset):
         self.total_len = input_len + target_len
         
         self.indices = []
-        print(data.shape)
-        print(self.total_len)
         for i in range(data.shape[0]):
             n_seqs = data.shape[1] - self.total_len + 1
             if n_seqs > 0:
