@@ -8,7 +8,7 @@ from tqdm import tqdm
 import os
 import random
 import sys
-sys.path.append('/home/guest/DemandForecasting')
+sys.path.append('/home/quang_ai/DemandForecasting')
 
 from model.dlinear import Model
 from data_utils.load_data import load_and_preprocess_data
@@ -36,9 +36,9 @@ class Config:
     def __init__(self, data_type='imputed', use_decoder=True):
         # paths
         self.data_type = data_type
-        self.data_path = f'/home/guest/DemandForecasting/data/{data_type}_data.csv'
-        self.save_path = f'/home/guest/DemandForecasting/demand_forecasting/checkpoints/{data_type}_{"decoder" if use_decoder else "no_decoder"}/'
-        self.log_path = f'/home/guest/DemandForecasting/demand_forecasting/logs/{data_type}_{"decoder" if use_decoder else "no_decoder"}/'
+        self.data_path = f'/home/quang_ai/DemandForecasting/data/{data_type}_data.csv'
+        self.save_path = f'/home/quang_ai/DemandForecasting/demand_forecasting/checkpoints/{data_type}_{"decoder" if use_decoder else "no_decoder"}/'
+        self.log_path = f'/home/quang_ai/DemandForecasting/demand_forecasting/logs/{data_type}_{"decoder" if use_decoder else "no_decoder"}/'
         
         # model parameters
         self.model = 'dlinear'
@@ -81,9 +81,9 @@ test_dataset = torch.utils.data.Subset(dataset, list(range(num_train + num_val, 
 print(f'Train size: {len(train_dataset)}, Val size: {len(val_dataset)}, Test size: {len(test_dataset)}')
 # prepare data loader
 
-train_loader = DataLoader(train_dataset, batch_size=configs.batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=configs.batch_size, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=configs.batch_size, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=configs.batch_size, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
+val_loader = DataLoader(val_dataset, batch_size=configs.batch_size, shuffle=False, num_workers=4, pin_memory=True, prefetch_factor=2)
+test_loader = DataLoader(test_dataset, batch_size=configs.batch_size, shuffle=False, num_workers=4, pin_memory=True, prefetch_factor=2)
 
 # initialize model
 model = Model(configs)
@@ -106,27 +106,28 @@ patience_counter = 0
 
 for epoch in tqdm(range(configs.epochs), desc='Epochs'):
     model.train()
-    epoch_train_losses = []
-    for x, x_dec, y in tqdm(train_loader, desc='Training', leave=False):
+    epoch_train_loss = 0.0
+    for x, x_dec, y in train_loader:
         x = x.to(device)
         x_dec = x_dec.to(device)
         y = y.to(device)
         
         optimizer.zero_grad()
         output = model(x, x_dec)
+        # output = torch.clamp(output, min=0.0) # clip min = 0
         if not configs.use_decoder:
             output = output[:, :, -1:]
         loss = criterion(output, y)
         loss.backward()
         optimizer.step()
         
-        epoch_train_losses.append(loss.item())
+        epoch_train_loss += loss.detach()
     
-    avg_train_loss = np.mean(epoch_train_losses)
+    avg_train_loss = (epoch_train_loss / len(train_loader)).item()
     train_loss_history.append(avg_train_loss)
     
     model.eval()
-    epoch_val_losses = []
+    epoch_val_loss = 0.0
     with torch.no_grad():
         for x, x_dec, y in val_loader:
             x = x.to(device)
@@ -134,12 +135,13 @@ for epoch in tqdm(range(configs.epochs), desc='Epochs'):
             y = y.to(device)
             
             output = model(x, x_dec)
+            # output = torch.clamp(output, min=0.0) 
             if not configs.use_decoder:
                 output = output[:, :, -1:]
             loss = criterion(output, y)
-            epoch_val_losses.append(loss.item())
+            epoch_val_loss += loss.detach()
     
-    avg_val_loss = np.mean(epoch_val_losses)
+    avg_val_loss = (epoch_val_loss / len(val_loader)).item()
     val_loss_history.append(avg_val_loss)
     
     if configs.enable_scheduler:
