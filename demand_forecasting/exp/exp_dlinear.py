@@ -33,12 +33,12 @@ args = parser.parse_args()
 
 # configuration
 class Config:
-    def __init__(self, data_type='imputed', use_decoder=True):
+    def __init__(self, data_type='imputed', use_decoder=True, time_encoded=False):
         # paths
         self.data_type = data_type
         self.data_path = f'/home/quang_ai/DemandForecasting/data/{data_type}_data.csv'
-        self.save_path = f'/home/quang_ai/DemandForecasting/demand_forecasting/checkpoints/{data_type}_{"decoder" if use_decoder else "no_decoder"}/'
-        self.log_path = f'/home/quang_ai/DemandForecasting/demand_forecasting/logs/{data_type}_{"decoder" if use_decoder else "no_decoder"}/'
+        self.save_path = f'/home/quang_ai/DemandForecasting/demand_forecasting/checkpoints/{data_type}_{"decoder" if use_decoder else "no_decoder"}_{"time_encoded" if time_encoded else "no_time_encoded"}/'
+        self.log_path = f'/home/quang_ai/DemandForecasting/demand_forecasting/logs/{data_type}_{"decoder" if use_decoder else "no_decoder"}_{"time_encoded" if time_encoded else "no_time_encoded"}/'
         
         # model parameters
         self.model = 'dlinear'
@@ -46,23 +46,23 @@ class Config:
         self.enable_scheduler = True
         self.seq_len = 480
         self.pred_len = 112
-        self.enc_in = 11
-        self.dec_in = 10
+        self.enc_in = 11 if time_encoded else 9
+        self.dec_in = 10 if time_encoded else 8
         self.use_decoder = use_decoder
         self.individual = True
-        
+        self.time_encoded = time_encoded
         # training parameters
         self.batch_size = 1024
         self.lr = 0.001
         self.epochs = 20
         self.train_ratio = 0.99
         
-configs = Config(data_type=args.data_type, use_decoder=args.use_decoder)
+configs = Config(data_type=args.data_type, use_decoder=args.use_decoder, time_encoded=False)
 
 # load data
 dataset, scaler = load_and_preprocess_data(
     data_path=configs.data_path,
-    time_encoded=True,
+    time_encoded=configs.time_encoded,
     input_len=configs.seq_len,
     target_len=configs.pred_len
 )
